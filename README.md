@@ -1,6 +1,13 @@
 # ĐỀ TÀI NHÓM 7
 
 # QUẢN LÝ BÁN VÉ MÁY BAY TRONG HỆ CƠ SỞ DỮ LIỆU PHÂN TÁN
+## GVHD :Ths.Nguyễn Thị Hương 
+## Sinh viên thực hiện 
+-Họ Và tên : Nguyễn Tiến Thắng
+-Mssv : k225480106058
+-lớp  : K58 KTPM 
+
+
 
 ## Nội dung nghiên cứu
 
@@ -17,8 +24,7 @@
 - Ứng dụng trong hệ thống quản lý bán vé máy bay
 
 
-## 1 Tạo Giao dịch thành công ( Transaction)
-### ( Dùng làm ví dụ :	Giao dịch phân tán) 
+## 1 Tạo Giao dịch thành công + Giao dịch phân tán Phần 4 ( Transaction)
 | Nội dung | Giá trị |
 |---|---|
 | Nơi thực hiện | Hà Nội |
@@ -705,6 +711,9 @@ thì demo **Durability thành công**.
 | Ghế đặt | GHE20 |
 | Mục tiêu | Đặt vé từ Hà Nội cho chuyến bay có dữ liệu lưu tại TP.HCM |
 
+---------
+
+
 
 #  Phần 4 Điều khiển tương tranh 
 ## Đã thực hành cùng với  2.3. I - Isolation (Tính Cô lập)
@@ -740,7 +749,8 @@ Khách A đang đặt GHE20
 → Khách B phải chờ
 → A xong thì B mới được xử lý
 ```
-````
+-------
+
 
 # 5. Vấn đề Deadlock
 

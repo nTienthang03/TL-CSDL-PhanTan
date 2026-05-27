@@ -232,14 +232,35 @@ ACID là bốn tính chất quan trọng nhất của một giao dịch trong c�
 
 # 2.1. A - Atomicity (Tính Nguyên tử)
 
-## Mô tả
+### Mô tả
 
-Toàn bộ các thao tác trong giao dịch được thực hiện như một đơn vị duy nhất:
+**Atomicity** đảm bảo một giao dịch phải được thực hiện như một khối thống nhất.
 
-```text
-Hoặc tất cả thành công
-Hoặc tất cả bị hủy bỏ
-```
+Trong hệ thống bán vé máy bay, một giao dịch đặt vé thường gồm nhiều bước:
+
+- Cập nhật trạng thái ghế
+- Giảm số ghế còn lại
+- Tạo vé cho khách hàng
+
+Nếu một bước trong giao dịch bị lỗi, toàn bộ giao dịch phải được hủy bằng `ROLLBACK`.
+
+---
+
+### Tình huống thực tế
+
+Giả sử khách hàng đặt vé cho chuyến bay:
+
+| Nội dung | Giá trị |
+|---|---|
+| Server thực hiện | SQL3 - TP.HCM |
+| Chuyến bay | VN302 |
+| Tuyến bay | TP.HCM → Đà Nẵng |
+| Ghế thử đặt | GHE25 |
+
+Trong quá trình đặt vé, hệ thống đã cập nhật ghế và giảm số ghế còn lại.  
+Tuy nhiên, ở bước cuối cùng hệ thống phát sinh lỗi cố ý.
+
+Khi lỗi xảy ra, SQL Server phải rollback toàn bộ giao dịch để dữ liệu quay về trạng thái ban đầu.
 
 ---
 
@@ -307,18 +328,66 @@ toàn bộ giao dịch sẽ bị rollback.
 
 # 2.2. C - Consistency (Tính Nhất quán)
 
-## Mô tả
 
-Giao dịch phải đưa cơ sở dữ liệu:
+### Mô tả
 
-```text
-Từ trạng thái nhất quán này
-Sang trạng thái nhất quán khác
-```
+**Consistency** đảm bảo dữ liệu luôn tuân thủ các ràng buộc đã đặt ra trong cơ sở dữ liệu.
 
-Dữ liệu sau giao dịch luôn phải hợp lệ.
+Trong hệ thống bán vé máy bay, dữ liệu phải luôn hợp lệ:
+
+- Số ghế còn lại không được âm
+- Số ghế còn lại không được lớn hơn tổng số ghế
+- Không được bán vé khi chuyến bay đã hết ghế
 
 ---
+
+### Tình huống thực tế
+
+Giả sử chuyến bay:
+
+| Nội dung | Giá trị |
+|---|---|
+| Server thực hiện | SQL3 - TP.HCM |
+| Chuyến bay | VN302 |
+| Tuyến bay | TP.HCM → Đà Nẵng |
+| Ghế thử đặt | GHE30 |
+
+Hệ thống giả lập chuyến bay `VN302` đã hết ghế bằng cách đặt:
+
+```sql
+SoGheConLai = 0
+```
+
+Sau đó hệ thống vẫn cố gắng đặt thêm vé.
+
+Khi số ghế bị giảm xuống:
+
+```sql
+SoGheConLai = -1
+```
+
+SQL Server sẽ phát hiện vi phạm ràng buộc và rollback giao dịch.
+
+---
+
+### Ràng buộc dữ liệu
+
+Trong bảng `ChuyenBay_HCM`, hệ thống đã có ràng buộc kiểm tra số ghế:
+
+```sql
+CONSTRAINT CK_HCM_SoGhe 
+CHECK (SoGheConLai >= 0 AND SoGheConLai <= TongSoGhe)
+```
+
+Ràng buộc này đảm bảo:
+
+- `SoGheConLai >= 0`
+- `SoGheConLai <= TongSoGhe`
+
+Nghĩa là số ghế còn lại không được âm và không được vượt quá tổng số ghế của chuyến bay.
+
+---
+
 
 # Test Case minh họa
 
@@ -523,24 +592,29 @@ phải chờ đến khi giao dịch thứ nhất COMMIT.
 
 # 2.4. D - Durability (Tính Bền vững)
 
-Có. Test **Durability** không nhất thiết phải reset SQL Server.
-Bạn có thể test bằng cách:
+### Mô tả
 
-```text
-1. COMMIT giao dịch
-2. Đóng tab query hiện tại
-3. Mở tab query mới
-4. SELECT lại dữ liệu
-```
+**Durability** đảm bảo rằng sau khi một giao dịch đã `COMMIT`, dữ liệu sẽ được lưu lại bền vững trong cơ sở dữ liệu.
 
-Nếu dữ liệu vẫn còn thì chứng minh được:
-
-```text
-Dữ liệu đã COMMIT được lưu bền vững
-```
+Ngay cả khi người dùng đóng tab query, mở lại phiên làm việc mới hoặc hệ thống gặp sự cố sau khi commit, dữ liệu đã lưu vẫn không bị mất.
 
 ---
 
+### Tình huống thực tế
+
+Trong hệ thống bán vé máy bay, khách hàng đặt vé chuyến:
+
+| Nội dung | Giá trị |
+|---|---|
+| Server thực hiện | SQL3 - TP.HCM |
+| Chuyến bay | VN302 |
+| Tuyến bay | TP.HCM → Đà Nẵng |
+| Khách hàng | Test Durability |
+| Ghế đặt | GHE40 |
+
+Sau khi giao dịch đặt vé được `COMMIT`, vé của khách hàng phải được lưu lại trong bảng `VeMayBay_HCM`.
+
+---
 ## Code COMMIT kiểm tra Durability
 
 Chạy trên **SQL3 - TP.HCM**:

@@ -889,3 +889,296 @@ Tab 2 chờ Tab 1
 ```
 
 Đây chính là **deadlock**.
+
+
+
+## 3.5. Thực hiện các thao tác
+
+### 3.5.1. Tình huống thực hiện giao dịch
+
+Trong phần này, hệ thống thực hiện một giao dịch đặt vé máy bay trong môi trường cơ sở dữ liệu phân tán. Giao dịch được thực hiện tại máy chủ Hà Nội nhưng dữ liệu cần cập nhật nằm trên máy chủ TP.HCM thông qua Linked Server.
+
+| Nội dung                | Giá trị           |
+| ----------------------- | ----------------- |
+| Nơi thực hiện giao dịch | SQL1 - Hà Nội     |
+| Server chứa dữ liệu     | SQL3 - TP.HCM     |
+| Chuyến bay              | VN302             |
+| Tuyến bay               | TP.HCM → Đà Nẵng  |
+| Khách hàng              | Nguyễn Tiến Thắng |
+| Ghế đặt                 | GHE99             |
+
+Giao dịch này được xem là giao dịch phân tán vì lệnh được chạy tại SQL1 nhưng thao tác cập nhật dữ liệu được thực hiện trên SQL3 thông qua Linked Server `[SQL3]`.
+
+---
+
+### 3.5.2. Bước 1: Kiểm tra dữ liệu trước giao dịch
+
+Trước khi thực hiện giao dịch đặt vé, hệ thống cần kiểm tra dữ liệu ban đầu để đảm bảo chuyến bay và ghế ngồi tồn tại.
+
+Các nội dung cần kiểm tra gồm:
+
+* Chuyến bay `VN302` có tồn tại hay không.
+* Chuyến bay `VN302` có đúng thuộc phân mảnh TP.HCM hay không.
+* Ghế `GHE99` có tồn tại hay không.
+* Ghế `GHE99` đang ở trạng thái `Trống` hay đã được đặt.
+* Vé của ghế `GHE99` đã tồn tại trong bảng vé hay chưa.
+
+Câu lệnh kiểm tra:
+
+```sql
+USE QuanLyVeMayBay;
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.ChuyenBay_HCM
+WHERE MaChuyenBay = 'VN302';
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.GheNgoi_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.VeMayBay_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+```
+
+Ý nghĩa của bước này là đảm bảo giao dịch chỉ được thực hiện khi dữ liệu đầu vào hợp lệ.
+
+---
+
+### 3.5.3. Bước 2: Kiểm tra phân mảnh dữ liệu
+
+Hệ thống sử dụng phân mảnh ngang theo thuộc tính `NoiDi`.
+
+Theo thiết kế:
+
+| Phân mảnh     | Điều kiện          | Site lưu trữ |
+| ------------- | ------------------ | ------------ |
+| ChuyenBay_HN  | NoiDi = N'Hà Nội'  | SQL1         |
+| ChuyenBay_DN  | NoiDi = N'Đà Nẵng' | SQL2         |
+| ChuyenBay_HCM | NoiDi = N'TP.HCM'  | SQL3         |
+
+Chuyến bay `VN302` có tuyến bay `TP.HCM → Đà Nẵng`, nên dữ liệu của chuyến này phải nằm tại SQL3 trong bảng `ChuyenBay_HCM`.
+
+Câu lệnh kiểm tra:
+
+```sql
+USE QuanLyVeMayBay;
+GO
+
+SELECT 
+    N'SQL3 - TP.HCM' AS SiteLuuTru,
+    MaChuyenBay,
+    HangBay,
+    NoiDi,
+    NoiDen
+FROM [SQL3].QuanLyVeMayBay.dbo.ChuyenBay_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND NoiDi = N'TP.HCM';
+GO
+```
+
+Kết luận: chuyến bay `VN302` thuộc phân mảnh TP.HCM, dữ liệu được lưu đúng tại SQL3.
+
+---
+
+### 3.5.4. Bước 3: Thực hiện giao dịch đặt vé
+
+Một giao dịch đặt vé hợp lệ cần thực hiện đầy đủ các thao tác sau:
+
+1. Cập nhật trạng thái ghế từ `Trống` sang `Đã đặt`.
+2. Giảm số ghế còn lại của chuyến bay đi 1.
+3. Thêm thông tin vé máy bay của khách hàng vào bảng `VeMayBay_HCM`.
+
+Ba thao tác này phải được thực hiện trong cùng một transaction. Nếu một thao tác thất bại thì toàn bộ giao dịch phải rollback. Nếu tất cả thao tác thành công thì giao dịch được commit.
+
+Câu lệnh thực hiện giao dịch:
+
+```sql
+USE QuanLyVeMayBay;
+GO
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    /* Bước 1: Cập nhật trạng thái ghế */
+    UPDATE [SQL3].QuanLyVeMayBay.dbo.GheNgoi_HCM
+    SET TrangThai = N'Đã đặt'
+    WHERE MaChuyenBay = 'VN302'
+      AND MaGhe = 'GHE99'
+      AND TrangThai = N'Trống';
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        ROLLBACK TRANSACTION;
+        PRINT N'Giao dịch thất bại: Ghế GHE99 không tồn tại hoặc đã được đặt';
+        RETURN;
+    END
+
+    /* Bước 2: Giảm số ghế còn lại */
+    UPDATE [SQL3].QuanLyVeMayBay.dbo.ChuyenBay_HCM
+    SET SoGheConLai = SoGheConLai - 1
+    WHERE MaChuyenBay = 'VN302'
+      AND SoGheConLai > 0;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        ROLLBACK TRANSACTION;
+        PRINT N'Giao dịch thất bại: Chuyến bay đã hết ghế';
+        RETURN;
+    END
+
+    /* Bước 3: Thêm vé máy bay */
+    INSERT INTO [SQL3].QuanLyVeMayBay.dbo.VeMayBay_HCM
+    (
+        MaChuyenBay,
+        MaGhe,
+        TenKhachHang,
+        NgayDat
+    )
+    VALUES
+    (
+        'VN302',
+        'GHE99',
+        N'Nguyễn Tiến Thắng',
+        GETDATE()
+    );
+
+    COMMIT TRANSACTION;
+
+    PRINT N'Giao dịch thành công: Nguyễn Tiến Thắng đã đặt ghế GHE99 chuyến VN302';
+
+END TRY
+BEGIN CATCH
+
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    PRINT N'Giao dịch thất bại - Đã rollback';
+    PRINT ERROR_MESSAGE();
+
+END CATCH;
+GO
+```
+
+Trong đoạn code trên:
+
+* `BEGIN TRANSACTION` bắt đầu giao dịch.
+* `COMMIT TRANSACTION` xác nhận giao dịch thành công.
+* `ROLLBACK TRANSACTION` hủy toàn bộ thao tác nếu có lỗi.
+* `TRY...CATCH` dùng để bắt lỗi trong quá trình thực hiện.
+* `@@ROWCOUNT` dùng để kiểm tra thao tác cập nhật có thực sự ảnh hưởng đến dữ liệu hay không.
+
+---
+
+### 3.5.5. Bước 4: Kiểm tra dữ liệu sau giao dịch
+
+Sau khi giao dịch hoàn tất, cần kiểm tra lại dữ liệu trên SQL3 để xác nhận giao dịch đã thành công.
+
+Câu lệnh kiểm tra:
+
+```sql
+USE QuanLyVeMayBay;
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.ChuyenBay_HCM
+WHERE MaChuyenBay = 'VN302';
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.GheNgoi_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+
+SELECT *
+FROM [SQL3].QuanLyVeMayBay.dbo.VeMayBay_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+```
+
+Kết quả mong muốn:
+
+| Nội dung kiểm tra    | Kết quả           |
+| -------------------- | ----------------- |
+| Trạng thái ghế GHE99 | Đã đặt            |
+| Vé máy bay           | Đã được tạo       |
+| Tên khách hàng       | Nguyễn Tiến Thắng |
+| Số ghế còn lại       | Giảm 1            |
+
+Nếu các kết quả trên đúng thì giao dịch đặt vé đã được thực hiện thành công.
+
+---
+
+### 3.5.6. Bước 5: Kiểm tra đồng bộ dữ liệu sau Replication
+
+Sau khi giao dịch được thực hiện thành công trên SQL3, dữ liệu cần được đồng bộ về SQL1 thông qua Snapshot Replication.
+
+Trên SQL1, kiểm tra dữ liệu đã đồng bộ bằng các câu lệnh:
+
+```sql
+USE QuanLyVeMayBay;
+GO
+
+SELECT *
+FROM ChuyenBay_HCM
+WHERE MaChuyenBay = 'VN302';
+GO
+
+SELECT *
+FROM GheNgoi_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+
+SELECT *
+FROM VeMayBay_HCM
+WHERE MaChuyenBay = 'VN302'
+  AND MaGhe = 'GHE99';
+GO
+```
+
+Nếu SQL1 hiển thị thông tin ghế `GHE99` đã đặt và vé của khách hàng `Nguyễn Tiến Thắng`, chứng tỏ dữ liệu từ SQL3 đã được đồng bộ về SQL1 thành công.
+
+---
+
+### 3.5.7. Nhận xét theo lý thuyết giao dịch
+
+Giao dịch đặt vé trên thể hiện đúng các bước của một transaction trong cơ sở dữ liệu:
+
+| Bước lý thuyết                  | Thực hiện trong bài                                          |
+| ------------------------------- | ------------------------------------------------------------ |
+| Kiểm tra dữ liệu đầu vào        | Kiểm tra chuyến bay VN302, ghế GHE99, vé đã tồn tại hay chưa |
+| Bắt đầu giao dịch               | `BEGIN TRANSACTION`                                          |
+| Thực hiện các thao tác cập nhật | Cập nhật ghế, giảm số ghế, thêm vé                           |
+| Kiểm tra lỗi                    | Dùng `@@ROWCOUNT` và `TRY...CATCH`                           |
+| Xác nhận giao dịch              | `COMMIT TRANSACTION`                                         |
+| Hủy giao dịch khi lỗi           | `ROLLBACK TRANSACTION`                                       |
+| Kiểm tra sau giao dịch          | Truy vấn lại dữ liệu trên SQL3                               |
+| Kiểm tra đồng bộ                | Truy vấn dữ liệu đã replication về SQL1                      |
+
+Giao dịch này cũng thể hiện tính phân tán vì nơi thực hiện là SQL1 nhưng dữ liệu được cập nhật trên SQL3 thông qua Linked Server.
+
+---
+
+### 3.5.8. Kết luận
+
+Qua bài thực hành, hệ thống đã thực hiện được đầy đủ các thao tác:
+
+* Nhập và kiểm tra dữ liệu trước giao dịch.
+* Truy vấn dữ liệu từ SQL1 sang SQL3 thông qua Linked Server.
+* Kiểm tra dữ liệu thuộc đúng phân mảnh TP.HCM.
+* Thực hiện giao dịch đặt vé thành công.
+* Đảm bảo nếu có lỗi thì giao dịch rollback.
+* Kiểm tra kết quả sau giao dịch.
+* Kiểm tra dữ liệu được đồng bộ về SQL1 sau Replication.
+
+Giao dịch đặt vé cho khách hàng Nguyễn Tiến Thắng trên chuyến bay VN302, ghế GHE99 là một giao dịch phân tán thành công trong hệ thống cơ sở dữ liệu phân tán.
+
